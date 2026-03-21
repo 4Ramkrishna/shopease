@@ -1,8 +1,63 @@
 import { Router } from 'express';
+import multer from 'multer';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { supabase } from '../index.js';
 import { requireAuth, requireSeller } from '../middleware/auth.js';
 
 const router = Router();
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const uploadsDir = path.resolve(__dirname, '../../uploads/products');
+
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, uploadsDir),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname) || '.jpg';
+    cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`);
+  },
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (!file.mimetype.startsWith('image/')) {
+      cb(new Error('Only image files are allowed'));
+      return;
+    }
+    cb(null, true);
+  },
+});
+
+/** Public URL for uploaded files (HTTPS + correct host behind proxies like Render). */
+function getPublicBaseUrl(req) {
+  const fromEnv = process.env.PUBLIC_BASE_URL?.trim().replace(/\/$/, '');
+  if (fromEnv) return fromEnv;
+  const proto = req.get('x-forwarded-proto') || req.protocol;
+  const host = req.get('x-forwarded-host') || req.get('host');
+  return `${proto}://${host}`;
+}
+
+// Upload product image (seller only)
+router.post('/upload-image', requireAuth, requireSeller, (req, res) => {
+  upload.single('image')(req, res, (err) => {
+    if (err) {
+      return res.status(400).json({ error: err.message || 'Image upload failed' });
+    }
+    if (!req.file) {
+      return res.status(400).json({ error: 'Image file is required' });
+    }
+
+    const baseUrl = getPublicBaseUrl(req);
+    const imageUrl = `${baseUrl}/uploads/products/${req.file.filename}`;
+    return res.status(201).json({ image_url: imageUrl });
+  });
+});
 
 // Get all products (public - no auth needed)
 router.get('/', async (req, res) => {
